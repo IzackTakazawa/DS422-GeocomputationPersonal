@@ -1,0 +1,140 @@
+---
+title: "nighttime_lights.qmd"
+format: html
+editor: visual
+---
+
+## Install
+
+```{r}
+install.packages("blackmarbler")
+```
+
+```{r}
+# install.packages("devtools")
+devtools::install_github("worldbank/blackmarbler")
+```
+
+```{r}
+#### Setup
+# Load packages
+#install.packages("vctrs")
+library(blackmarbler)
+#install.packages("geodata")
+library(geodata)
+library(sf)
+library(terra)
+library(ggplot2)
+#install.packages("tidyterra")
+library(tidyterra)
+library(lubridate)
+
+#### Define NASA bearer token
+bearer <- "eyJ0eXAiOiJKV1QiLCJvcmlnaW4iOiJFYXJ0aGRhdGEgTG9naW4iLCJzaWciOiJlZGxqd3RwdWJrZXlfb3BzIiwiYWxnIjoiUlMyNTYifQ.eyJ0eXBlIjoiVXNlciIsInVpZCI6Iml6YWNrdGFrYXphd2EiLCJleHAiOjE3OTI4Nzg0OTQsImlhdCI6MTc4NzY5NDQ5NCwiaXNzIjoiaHR0cHM6Ly91cnMuZWFydGhkYXRhLm5hc2EuZ292IiwiaWRlbnRpdHlfcHJvdmlkZXIiOiJlZGxfb3BzIiwiYWNyIjoiZWRsIiwiYXNzdXJhbmNlX2xldmVsIjozfQ.K2gvioISpYOeE3LyJWf0yE7s4Bo0UedQd-SSqR0MWvteifBbC3l18ptdSm14OC12D-k2r7aapajadzF20W3zIS3WWrjn8gtcYD6wXKDKJSwRvf-9C0gM5Gg4NZ1LYCitMTMWtFNnpLiq8pkagDw_z9osbbzyfj_ta2BKTPwIOq8g2ktKTIzHLWTuNagdRFptZRl3cZRo-aPCY_zeW6CAZ5VmjjtEQ9EC9mCHm4tgMEn6HBAKIA6smh6_l4aF3HzhB1qjhWFjyNL6cyFF5zAgdPRz9GgWuBNM9EsACCG_C2QBPqfBwznzl_cJJGDzNW00dizMSBFzOZJrsaHtx_gLhA
+"
+
+### ROI
+# Define region of interest (roi). The roi must be (1) an sf polygon and (2)
+# in the WGS84 (epsg:4326) coordinate reference system. Here, we use the
+# getData function to load a polygon of Ghana
+roi_sf <- gadm(country = "GHA", level=1, path = tempdir()) 
+```
+
+```{r}
+### Daily data: raster for February 5, 2021
+r_20210205 <- bm_raster(roi_sf = roi_sf,
+                        product_id = "VNP46A2",
+                        date = "2021-02-05",
+                        bearer = bearer)
+
+### Monthly data: raster for October 2021
+r_202110 <- bm_raster(roi_sf = roi_sf,
+                      product_id = "VNP46A3",
+                      date = "2021-10-01", # The day is ignored
+                      bearer = bearer)
+
+### Annual data: raster for 2021
+r_2021 <- bm_raster(roi_sf = roi_sf,
+                    product_id = "VNP46A4",
+                    date = 2021,
+                    bearer = bearer)
+```
+
+```{r}
+#### Daily data in March 2021
+r_daily <- bm_raster(roi_sf = roi_sf,
+                     product_id = "VNP46A2",
+                     date = seq.Date(from = ymd("2021-03-01"), to = ymd("2021-03-31"), by = "day"),
+                     bearer = bearer)
+
+#### Monthly aggregated data in 2021 and 2022
+r_monthly <- bm_raster(roi_sf = roi_sf,
+                       product_id = "VNP46A3",
+                       date = seq.Date(from = ymd("2021-01-01"), to = ymd("2022-12-01"), by = "month"),
+                       bearer = bearer)
+
+#### Yearly aggregated data in 2012 and 2021
+r_annual <- bm_raster(roi_sf = roi_sf,
+                      product_id = "VNP46A4",
+                      date = 2012:2021,
+                      bearer = bearer)
+```
+
+```{r}
+#### Make raster
+r <- bm_raster(roi_sf = roi_sf,
+               product_id = "VNP46A3",
+               date = "2021-10-01",
+               bearer = bearer)
+
+#### Prep data
+r <- r |> terra::mask(roi_sf)
+
+## Distribution is skewed, so log
+r[] <- log(r[] + 1)
+
+##### Map
+ggplot() +
+  geom_spatraster(data = r) +
+  scale_fill_gradient2(low = "black",
+                       mid = "yellow",
+                       high = "red",
+                       midpoint = 4.5,
+                       na.value = "transparent") +
+  labs(title = "Nighttime Lights: October 2021") +
+  coord_sf() +
+  theme_void() +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5),
+        legend.position = "none")
+```
+
+```{r}
+#### Extract annual data
+ntl_df <- bm_extract(roi_sf = roi_sf,
+                     product_id = "VNP46A4",
+                     date = 2012:2022,
+                     bearer = bearer)
+
+#### Trends over time
+ntl_df |>
+  ggplot() +
+  geom_col(aes(x = date,
+               y = ntl_mean),
+           fill = "darkorange") +
+  facet_wrap(~NAME_1) +
+  labs(x = NULL,
+       y = "NTL Luminosity",
+       title = "Ghana Admin Level 1: Annual Average Nighttime Lights") +
+  scale_x_continuous(labels = seq(2012, 2022, 4),
+                     breaks = seq(2012, 2022, 4)) +
+  theme_minimal() +
+  theme(strip.text = element_text(face = "bold"))
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
