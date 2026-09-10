@@ -7,7 +7,7 @@ editor: visual
 ## Install
 
 ```{r}
-install.packages("blackmarbler")
+#install.packages("blackmarbler")
 ```
 
 ```{r}

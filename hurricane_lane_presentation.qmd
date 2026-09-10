@@ -1,0 +1,511 @@
+---
+title: "Hurricane Lane: Power Outages Seen Through Nighttime Lights"
+subtitle: "Hawaii, August–September 2018 | NASA Black Marble VIIRS"
+author: "Izack Takazawa"
+format:
+  html:
+    toc: true
+format: html
+editor: visual
+---
+
+```{r}
+#| message: false
+#| warning: false
+
+library(tidyverse)
+library(tigris)
+library(sf)
+library(blackmarbler)
+library(terra)
+library(tidyterra)
+library(lubridate)
+library(exactextractr)
+library(here)
+library(gt)
+library(scales)
+#install.packages("patchwork")
+library(patchwork)
+
+options(tigris_use_cache = TRUE)
+options(scipen = 999)
+```
+
+# Research question
+
+**How did nighttime radiance across Hawaii change during Hurricane Lane?**
+
+Hurricane Lane at its peak was a Category 5 hurricane. Although technically Lane never made landfall, its proximity to the islands caused torrential rainfall.
+
+Big Island received the most notable rainfall averaging around 17 inches of rain over four days according to NOAA.
+
+This analysis compares a pre-storm nighttime-light baseline with the Hurricane Lane period and week after which I labeled "restoration period".
+
+To best give a proper analysis upon the storms effect of power outages we chose to analyze both before, during, and after the storm.
+
+# Setting up Dates/Timeframe
+
+```{r TIMEFRAME}
+# Timeframe of analysis
+#Pre-storm (1 week prior) August 1-8 2018
+#During the Storm August 15-29 
+#Post storm ("Restoration Period") August 30-September 15)
+baseline_dates <- seq.Date(as.Date("2018-08-01"), as.Date("2018-08-08"), by = "day")
+storm_dates <- seq.Date(as.Date("2018-08-15"), as.Date("2018-08-29"), by = "day")
+restoration_start <- as.Date("2018-08-30")
+analysis_end <- as.Date("2018-09-15")
+restoration_dates <- seq.Date(restoration_start, analysis_end, by = "day")
+all_dates <- c(baseline_dates, storm_dates, restoration_dates)
+
+#TOKEN
+bearer <- "eyJ0eXAiOiJKV1QiLCJvcmlnaW4iOiJFYXJ0aGRhdGEgTG9naW4iLCJzaWciOiJlZGxqd3RwdWJrZXlfb3BzIiwiYWxnIjoiUlMyNTYifQ.eyJ0eXBlIjoiVXNlciIsInVpZCI6Iml6YWNrdGFrYXphd2EiLCJleHAiOjE3OTI4Nzg0OTQsImlhdCI6MTc4NzY5NDQ5NCwiaXNzIjoiaHR0cHM6Ly91cnMuZWFydGhkYXRhLm5hc2EuZ292IiwiaWRlbnRpdHlfcHJvdmlkZXIiOiJlZGxfb3BzIiwiYWNyIjoiZWRsIiwiYXNzdXJhbmNlX2xldmVsIjozfQ.K2gvioISpYOeE3LyJWf0yE7s4Bo0UedQd-SSqR0MWvteifBbC3l18ptdSm14OC12D-k2r7aapajadzF20W3zIS3WWrjn8gtcYD6wXKDKJSwRvf-9C0gM5Gg4NZ1LYCitMTMWtFNnpLiq8pkagDw_z9osbbzyfj_ta2BKTPwIOq8g2ktKTIzHLWTuNagdRFptZRl3cZRo-aPCY_zeW6CAZ5VmjjtEQ9EC9mCHm4tgMEn6HBAKIA6smh6_l4aF3HzhB1qjhWFjyNL6cyFF5zAgdPRz9GgWuBNM9EsACCG_C2QBPqfBwznzl_cJJGDzNW00dizMSBFzOZJrsaHtx_gLhA"
+
+period_lookup <- tibble(
+  date = all_dates,
+  period = case_when(
+    date %in% baseline_dates ~ "Baseline",
+    date %in% storm_dates ~ "Storm period",
+    date %in% restoration_dates ~ "Restoration"
+  )
+) |>
+  mutate(period = factor(period, levels = c("Baseline", "Storm period", "Restoration")))
+```
+
+# Where we are looking to analyze
+
+Hawaii County
+
+Maui County
+
+Honolulu County (Oahu)
+
+Kauai County
+
+```{r counties-map}
+roi_hawaii <- counties(
+  state = "HI",
+  cb = TRUE,
+  year = 2018
+) |>
+  st_transform(4326) |>
+  st_crop(
+    xmin = -160.5,
+    xmax = -154.5,
+    ymin = 18.5,
+    ymax = 22.5
+  ) |>
+  filter(NAME != "Kalawao") |>
+  mutate(
+    county_label = case_when(
+      NAME == "Hawaii" ~ "Hawaii County",
+      NAME == "Maui" ~ "Maui County",
+      NAME == "Honolulu" ~ "Honolulu County (Oahu)",
+      NAME == "Kauai" ~ "Kauai County",
+      TRUE ~ NAME
+    )
+  )
+
+ggplot(roi_hawaii) +
+  geom_sf(
+    aes(fill = county_label),
+    color = "white",
+    linewidth = 0.5
+  ) +
+  geom_sf_text(
+    aes(label = county_label),
+    size = 3,
+    color = "black"
+  ) +
+  scale_fill_brewer(
+    palette = "Set2",
+    name = "County"
+  ) +
+  coord_sf(
+    xlim = c(-160.5, -154.5),
+    ylim = c(18.5, 22.5),
+    expand = FALSE
+  ) +
+  labs(
+    title = "Hawaii Counties Included in the Analysis",
+    subtitle = "Hawaii County, Maui County, Honolulu County (Oahu), and Kauai County",
+    x = "Longitude",
+    y = "Latitude"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold")
+  )
+```
+
+## Specifically on Oahu we will be looking at the Oahu sub areas:
+
+Honolulu
+
+Windward Oahu
+
+Leeward Oahu
+
+North Shore
+
+# Pull Black Marble data
+
+```{r pull-rasters}
+pull_one_date <- function(d) {
+  tryCatch(
+    bm_raster(
+      roi_sf = roi_hawaii,
+      product_id = "VNP46A2",
+      date = d,
+      bearer = bearer,
+      quality_flag_rm = 2
+    ),
+    error = function(e) {
+      message("Failed for ", d)
+      NULL
+    }
+  )
+}
+
+r_list <- purrr::map(all_dates, pull_one_date)
+
+names(r_list) <- as.character(all_dates)
+
+r_list <- purrr::compact(r_list)
+
+message("Downloaded dates: ", paste(names(r_list), collapse = ", "))
+
+message(
+  "Dropped dates: ",
+  paste(
+    setdiff(as.character(all_dates), names(r_list)),
+    collapse = ", "
+  )
+)
+
+r_all <- rast(r_list) |>
+  mask(roi_hawaii)
+
+names(r_all) <- names(r_list)
+
+available_dates <- as.Date(names(r_all))
+
+available_lookup <- period_lookup |>
+  filter(date %in% available_dates)
+```
+
+# County/island radiance
+
+Display all of Hawaii counties included in the analysis
+
+```{r county-radiance}
+extract_daily_means <- function(raster_stack, polygons, area_name) {
+  purrr::map_dfr(seq_len(nlyr(raster_stack)), function(i) {
+    tibble(
+      area = polygons[[area_name]],
+      date = as.Date(names(raster_stack)[i]),
+      radiance = exact_extract(raster_stack[[i]], polygons, fun = "mean")
+    )
+  })
+}
+
+county_daily <- extract_daily_means(r_all, roi_hawaii, "island") |>
+  left_join(period_lookup, by = "date")
+
+county_summary <- county_daily |>
+  filter(period %in% c("Baseline", "Storm period")) |>
+  group_by(area, period) |>
+  summarize(
+    mean_radiance = mean(radiance, na.rm = TRUE),
+    n_nights = sum(!is.na(radiance)),
+    .groups = "drop"
+  ) |>
+  pivot_wider(names_from = period, values_from = mean_radiance) |>
+  mutate(
+    absolute_change = `Storm period` - Baseline,
+    percent_change = 100 * absolute_change / Baseline
+  )
+
+county_summary |>
+  gt() |>
+  fmt_number(columns = c(Baseline, `Storm period`, absolute_change), decimals = 2) |>
+  fmt_number(columns = percent_change, decimals = 1, suffixing = FALSE) |>
+  cols_label(
+    area = "County/island",
+    `Storm period` = "Storm-period mean",
+    percent_change = "Percent change"
+  ) |>
+  tab_header(title = "County/Island Baseline Versus Storm-Period Radiance")
+```
+
+## 
+
+```{r county-bars}
+ggplot(
+  county_daily |> filter(period %in% c("Baseline", "Storm period")) |>
+    group_by(area, period) |>
+    summarize(mean_radiance = mean(radiance, na.rm = TRUE), .groups = "drop"),
+  aes(x = area, y = mean_radiance, fill = period)
+) +
+  geom_col(position = position_dodge(width = 0.75), width = 0.65) +
+  scale_fill_manual(values = c("Baseline" = "grey65", "Storm period" = "firebrick")) +
+  labs(
+    title = "Mean Nighttime Radiance by County/Island",
+    subtitle = "Pre-storm baseline (Aug 1–8) compared with Hurricane Lane period (Aug 15–29)",
+    x = NULL, y = "Mean radiance", fill = NULL
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+```{r county-radiance-timeline}
+ggplot(
+  county_daily,
+  aes(
+    x = date,
+    y = radiance,
+    color = area,
+    group = area
+  )
+) +
+  geom_rect(
+    data = tibble(
+      xmin = min(storm_dates),
+      xmax = max(storm_dates),
+      ymin = -Inf,
+      ymax = Inf
+    ),
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      ymin = ymin,
+      ymax = ymax
+    ),
+    inherit.aes = FALSE,
+    fill = "firebrick",
+    alpha = 0.10
+  ) +
+  geom_line(
+    linewidth = 0.7
+  ) +
+  geom_point(
+    size = 1.8
+  ) +
+  geom_vline(
+    xintercept = restoration_start,
+    linetype = "dashed",
+    color = "steelblue4",
+    linewidth = 0.7
+  ) +
+  scale_x_date(
+    date_breaks = "3 days",
+    date_labels = "%b %d"
+  ) +
+  labs(
+    title = "Nighttime Radiance by County/Island Through Hurricane Lane",
+    subtitle = "Shaded: Hurricane Lane Impact; Line: restoration period",
+    x = NULL,
+    y = "Mean nighttime radiance",
+    color = "County/island"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(
+      angle = 35,
+      hjust = 1
+    )
+  )
+```
+
+```{r statewide-nighttime-lights-map}
+# Choose one successfully downloaded Hurricane Lane date.
+map_date <- "2018-08-22"
+            #"2018-08-23"
+            #"2018-08-24"
+            #"2018-08-25"
+            #"2018-08-26"
+
+# Check that the requested date exists in your raster stack.
+if (!map_date %in% names(r_all)) {
+  stop(
+    paste0(
+      map_date,
+      " was not downloaded. Choose a date from: ",
+      paste(names(r_all), collapse = ", ")
+    )
+  )
+}
+
+# Pull one daily VNP46A2 raster from your existing stack.
+r_map <- r_all[[map_date]] |>
+  terra::mask(roi_hawaii)
+
+# Log-transform only the copy used for this map.
+# Adding 1 prevents log(0).
+r_map[] <- log(r_map[] + 1)
+
+ggplot() +
+  geom_spatraster(data = r_map) +
+  geom_sf(
+    data = roi_hawaii,
+    fill = NA,
+    color = "white",
+    linewidth = 0.35
+  ) +
+  scale_fill_gradient2(
+    low = "black",
+    mid = "yellow",
+    high = "red",
+    midpoint = 4.5,
+    na.value = "transparent",
+    name = "Log radiance"
+  ) +
+  coord_sf(
+    xlim = c(-160.5, -154.5),
+    ylim = c(18.5, 22.5),
+    expand = FALSE
+  ) +
+  labs(
+    title = "Hawaii Nighttime Lights During Hurricane Lane",
+    subtitle = paste0(
+      "NASA Black Marble VNP46A2 daily radiance — ",
+      format(as.Date(map_date), "%B %d, %Y")
+    )
+  ) +
+  theme_void() +
+  theme(
+    plot.title = element_text(
+      face = "bold",
+      hjust = 0.5
+    ),
+    plot.subtitle = element_text(
+      hjust = 0.5
+    ),
+    legend.position = "bottom"
+  )
+```
+
+```{r county-percent-change}
+county_ranked <- county_summary |>
+  arrange(percent_change) |>
+  mutate(
+    area = factor(area, levels = area)
+  )
+
+ggplot(
+  county_ranked,
+  aes(
+    x = area,
+    y = percent_change,
+    fill = percent_change < 0
+  )
+) +
+  geom_col(width = 0.68) +
+  geom_hline(
+    yintercept = 0,
+    color = "grey35",
+    linewidth = 0.4
+  ) +
+  geom_text(
+    aes(
+      label = paste0(round(percent_change, 1), "%")
+    ),
+    vjust = ifelse(county_ranked$percent_change < 0, 1.3, -0.35),
+    size = 3.6
+  ) +
+  scale_fill_manual(
+    values = c(
+      "TRUE" = "firebrick",
+      "FALSE" = "darkgreen"
+    ),
+    guide = "none"
+  ) +
+  coord_flip() +
+  labs(
+    title = "County/Island Change in Nighttime Radiance",
+    subtitle = "Percent change from the pre-storm baseline to the Hurricane Lane period",
+    x = NULL,
+    y = "Percent change in mean radiance"
+  ) +
+  theme_minimal()
+```
+
+```{r oahu-zones}
+zone_daily <- extract_daily_means(r_all, oahu_zones, "zone") |>
+  left_join(period_lookup, by = "date")
+
+zone_summary <- zone_daily |>
+  filter(period %in% c("Baseline", "Storm period")) |>
+  group_by(area, period) |>
+  summarize(mean_radiance = mean(radiance, na.rm = TRUE), .groups = "drop") |>
+  pivot_wider(names_from = period, values_from = mean_radiance) |>
+  mutate(
+    absolute_change = `Storm period` - Baseline,
+    percent_change = 100 * absolute_change / Baseline
+  )
+
+zone_summary |>
+  gt() |>
+  fmt_number(columns = c(Baseline, `Storm period`, absolute_change), decimals = 2) |>
+  fmt_number(columns = percent_change, decimals = 1) |>
+  cols_label(area = "Oahu zone", `Storm period` = "Storm-period mean") |>
+  tab_header(title = "Oahu Sub-area Baseline Versus Storm-Period Radiance")
+```
+
+```{r darkening-hotspots}
+darkening_class <- classify(
+  z_score_meaningful,
+  rcl = matrix(
+    c(
+      -Inf, -2, 1,
+      -2, -1, 2,
+      -1, 1, 3,
+      1, 2, 4,
+      2, Inf, 5
+    ),
+    ncol = 3,
+    byrow = TRUE
+  )
+)
+
+levels(darkening_class) <- data.frame(
+  value = 1:5,
+  category = c(
+    "Unusually darker",
+    "Moderately darker",
+    "Near baseline",
+    "Moderately brighter",
+    "Unusually brighter"
+  )
+)
+
+ggplot() +
+  geom_spatraster(data = darkening_class) +
+  geom_sf(
+    data = oahu_zones,
+    fill = NA,
+    color = "black",
+    linewidth = 0.3
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Unusually darker" = "#8B0000",
+      "Moderately darker" = "#E76F51",
+      "Near baseline" = "#F1F1F1",
+      "Moderately brighter" = "#8EC07C",
+      "Unusually brighter" = "#1B7837"
+    ),
+    na.value = "grey90",
+    name = NULL
+  ) +
+  labs(
+    title = "Oahu: Nighttime-Light Darkening Hotspots",
+    subtitle = "Classification uses storm-period change relative to each pixel's pre-storm variability"
+  ) +
+  coord_sf() +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom"
+  )
+```
