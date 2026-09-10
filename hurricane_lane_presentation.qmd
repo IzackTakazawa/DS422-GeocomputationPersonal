@@ -2,11 +2,10 @@
 title: "Hurricane Lane: Power Outages Seen Through Nighttime Lights"
 subtitle: "Hawaii, August–September 2018 | NASA Black Marble VIIRS"
 author: "Izack Takazawa"
-format:
-  html:
-    toc: true
 format: html
-editor: visual
+execute:
+  message: false
+  warning: false
 ---
 
 ```{r}
@@ -197,8 +196,6 @@ available_lookup <- period_lookup |>
 
 # County/island radiance
 
-Display all of Hawaii counties included in the analysis
-
 ```{r county-radiance}
 extract_daily_means <- function(raster_stack, polygons, area_name) {
   purrr::map_dfr(seq_len(nlyr(raster_stack)), function(i) {
@@ -304,8 +301,8 @@ ggplot(
     date_labels = "%b %d"
   ) +
   labs(
-    title = "Nighttime Radiance by County/Island Through Hurricane Lane",
-    subtitle = "Shaded: Hurricane Lane Impact; Line: restoration period",
+    title = "Nighttime Radiance by County/Island During Hurricane Lane",
+    subtitle = "Shaded: Hurricane Lane Impact; Line: Restoration Period",
     x = NULL,
     y = "Mean nighttime radiance",
     color = "County/island"
@@ -320,18 +317,14 @@ ggplot(
   )
 ```
 
-```{}
-```
-
 ```{r statewide-nighttime-lights-map}
-# Choose one successfully downloaded Hurricane Lane date.
-map_date <- "2018-08-22"
+map_date <- "2018-08-24"
+            #"2018-08-22"
             #"2018-08-23"
             #"2018-08-24"
             #"2018-08-25"
             #"2018-08-26"
 
-# Check that the requested date exists in your raster stack.
 if (!map_date %in% names(r_all)) {
   stop(
     paste0(
@@ -342,12 +335,11 @@ if (!map_date %in% names(r_all)) {
   )
 }
 
-# Pull one daily VNP46A2 raster from your existing stack.
+
 r_map <- r_all[[map_date]] |>
   terra::mask(roi_hawaii)
 
-# Log-transform only the copy used for this map.
-# Adding 1 prevents log(0).
+
 r_map[] <- log(r_map[] + 1)
 
 ggplot() +
@@ -391,17 +383,60 @@ ggplot() +
   )
 ```
 
-```{}
-```
+```{r darkening-hotspots}
 
-```{}
-```
+darkening_class <- classify(
+  z_score_meaningful,
+  rcl = matrix(
+    c(
+      -Inf, -2, 1,
+      -2, -1, 2,
+      -1, 1, 3,
+      1, 2, 4,
+      2, Inf, 5
+    ),
+    ncol = 3,
+    byrow = TRUE
+  )
+)
 
-```{}
-```
+levels(darkening_class) <- data.frame(
+  value = 1:5,
+  category = c(
+    "Unusually darker",
+    "Moderately darker",
+    "Near baseline",
+    "Moderately brighter",
+    "Unusually brighter"
+  )
+)
 
-```{}
-```
-
-```{}
+ggplot() +
+  geom_spatraster(data = darkening_class) +
+  geom_sf(
+    data = oahu_zones,
+    fill = NA,
+    color = "black",
+    linewidth = 0.3
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Unusually darker" = "#8B0000",
+      "Moderately darker" = "#E76F51",
+      "Near baseline" = "#F1F1F1",
+      "Moderately brighter" = "#8EC07C",
+      "Unusually brighter" = "#1B7837"
+    ),
+    na.value = "grey90",
+    name = NULL
+  ) +
+  labs(
+    title = "Oahu: Nighttime-Light Darkening Hotspots",
+    subtitle = "Classification uses storm-period change relative to each pixel's pre-storm variability"
+  ) +
+  coord_sf() +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom"
+  )
 ```
