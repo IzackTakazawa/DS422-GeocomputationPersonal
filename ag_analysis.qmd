@@ -1,0 +1,56 @@
+---
+title: "Agriculture Analysis"
+format: html
+editor: visual
+---
+
+## Load in Packages
+
+```{r}
+library(tidyverse)
+library(sf)
+library(here)
+library(mapview)
+```
+
+## Read in Data from 2015 & 2020
+
+```{r}
+ag_2015 <- st_read(here("data/ag_land_2015.geojson"))
+```
+
+```{r}
+ag_2020 <- st_read(here("data/ag_land_2020.geojson"))
+```
+
+## Make a map
+
+```{r}
+mapview(ag_2015, zcol = "cropcatego")
+```
+
+R color brewer can enhance this
+
+set n = 15
+
+#### Distribution of Acreage
+
+```{r}
+ggplot(ag_2015, aes(x = acreage)) + 
+  geom_histogram() + 
+  theme_bw()
+```
+
+What has that land been converted to?\
+
+one map of lost ag land between 2015-2020
+
+ag land ownership
+
+```{r}
+
+```
+
+```{r}
+mapview(ag_2020, zcol = "cropcatego")
+```
