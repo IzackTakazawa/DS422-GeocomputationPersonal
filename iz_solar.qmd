@@ -1,0 +1,81 @@
+---
+title: "SAM3"
+format: html
+editor: visual
+---
+
+## Read in Libraries
+
+```{r}
+library(tidyverse)
+library(here)
+library(sf)
+library(mapview)
+```
+
+## Read in data
+
+```{r}
+SAM <- st_read(here("oahu_solar_dedup_simple.geojson"))
+```
+
+## Map the data
+
+```{r}
+mapview(SAM)
+```
+
+## Retrieve census data
+
+```{r}
+library(tidycensus)
+
+oahu_median_household_income <- get_acs(
+  geography = "tract",
+  variable = "B19013_001",
+  state = "HI",
+  county = "Honolulu",
+  geometry = TRUE,
+  year = 2022)
+
+```
+
+```{r}
+mapview(oahu_median_household_income,
+        zcol = "estimate")
+```
+
+```{r}
+ggplot(data = oahu_median_household_income,
+       aes(x = moe, y = estimate)) + 
+  geom_point()+
+  geom_smooth(method = "lm")
+```
+
+\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_
+
+## Homework
+
+```{r}
+solar <- st_read("oahu_solar_dedup_simple.geojson") %>%
+  st_make_valid() %>%
+  st_transform(3563) %>%
+  mutate(area_m2 = as.numeric(st_area(.)))
+```
+
+```{r}
+summary(SAM$area_m2)
+nrow(SAM)
+```
+
+```{r}
+ggplot(SAM, aes(area_m2)) +
+  geom_histogram(bins = 60) +
+  scale_x_log10(labels = comma) +
+  labs(title = "Distribution of solar polygon areas (log scale)",
+       x = "Area (m²)", y = "Count")
+```
+
+```{r}
+
+```
