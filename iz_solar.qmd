@@ -11,6 +11,8 @@ library(tidyverse)
 library(here)
 library(sf)
 library(mapview)
+library(tidycensus)
+library(scales)
 ```
 
 ## Read in data
@@ -52,30 +54,118 @@ ggplot(data = oahu_median_household_income,
   geom_smooth(method = "lm")
 ```
 
+```{r}
+
+```
+
 \_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_
 
 ## Homework
 
 ```{r}
-solar <- st_read("oahu_solar_dedup_simple.geojson") %>%
-  st_make_valid() %>%
-  st_transform(3563) %>%
-  mutate(area_m2 = as.numeric(st_area(.)))
+income_sf <- get_acs(
+  geography = "tract",
+  variables = "B19013_001",   # median household income
+  state     = "HI",
+  county    = "Honolulu",
+  year      = 2022,
+  geometry  = TRUE,
+  survey    = "acs5"
+) %>%
+  rename(median_income = estimate, income_moe = moe) %>%
+  filter(!is.na(median_income))   # drop tracts with no ACS estimate (e.g. no pop.)
 ```
 
 ```{r}
-summary(SAM$area_m2)
-nrow(SAM)
+solar_sf <- st_read("oahu_solar_dedup_simple.geojson", quiet = TRUE)
 ```
 
 ```{r}
-ggplot(SAM, aes(area_m2)) +
-  geom_histogram(bins = 60) +
-  scale_x_log10(labels = comma) +
-  labs(title = "Distribution of solar polygon areas (log scale)",
-       x = "Area (m²)", y = "Count")
+target_crs <- 3563
+
+income_sf <- st_transform(income_sf, target_crs)
+solar_sf  <- st_transform(solar_sf,  target_crs)
+
+# Fix any invalid geometries before intersecting (common with dedup'd SAM
+# detections and TIGER tract polygons alike).
+income_sf <- st_make_valid(income_sf)
+solar_sf  <- st_make_valid(solar_sf)
 ```
 
 ```{r}
+solar_by_tract <- st_intersection(
+  solar_sf,
+  st_geometry(income_sf) %>% st_sf(GEOID = income_sf$GEOID, geometry = .)
+) %>%
+  mutate(solar_area_m2 = as.numeric(st_area(.))) %>%
+  st_drop_geometry() %>%
+  group_by(GEOID) %>%
+  summarise(
+    solar_area_m2   = sum(solar_area_m2, na.rm = TRUE),
+    n_solar_polygons = n(),
+    .groups = "drop"
+  )
+```
+
+```{r}
+tract_area <- income_sf %>%
+  mutate(tract_area_m2 = as.numeric(st_area(geometry))) %>%
+  st_drop_geometry() %>%
+  select(GEOID, tract_area_m2)
+
+analysis_sf <- income_sf %>%
+  left_join(solar_by_tract, by = "GEOID") %>%
+  left_join(tract_area, by = "GEOID") %>%
+  mutate(
+    solar_area_m2    = coalesce(solar_area_m2, 0),
+    n_solar_polygons = coalesce(n_solar_polygons, 0),
+    # solar coverage as a % of tract land area — the key normalized metric,
+    # since raw solar_area_m2 is confounded by tract size
+    solar_pct_cover  = 100 * solar_area_m2 / tract_area_m2,
+    income_k         = median_income / 1000
+  )
+```
+
+```{r}
+cor_pearson  <- cor.test(analysis_sf$median_income, analysis_sf$solar_pct_cover,
+                         method = "pearson")
+cor_spearman <- cor.test(analysis_sf$median_income, analysis_sf$solar_pct_cover,
+                         method = "spearman")
+
+lm_fit <- lm(solar_pct_cover ~ median_income, data = analysis_sf)
+lm_summary <- summary(lm_fit)
+
+cat("Pearson r  =", round(cor_pearson$estimate, 3),
+    " (p =", signif(cor_pearson$p.value, 3), ")\n")
+cat("Spearman rho =", round(cor_spearman$estimate, 3),
+    " (p =", signif(cor_spearman$p.value, 3), ")\n")
+cat("R-squared (linear) =", round(lm_summary$r.squared, 3), "\n")
+
+```
+
+```{r}
+map_income <- ggplot(analysis_sf) +
+  geom_sf(aes(fill = income_k), color = "white", linewidth = 0.05) +
+  scale_fill_viridis_c(option = "viridis", name = "Median\nincome ($k)",
+                       labels = label_number(suffix = "k")) +
+  labs(title = "Median household income") +
+  theme_void(base_size = 11) +
+  theme(legend.position = "right",
+        plot.title = element_text(face = "bold", size = 12))
+
+map_solar <- ggplot(analysis_sf) +
+  geom_sf(aes(fill = solar_pct_cover), color = "white", linewidth = 0.05) +
+  scale_fill_viridis_c(option = "magma", name = "Solar\ncoverage (%)") +
+  labs(title = "Solar panel coverage") +
+  theme_void(base_size = 11) +
+  theme(legend.position = "right",
+        plot.title = element_text(face = "bold", size = 12))
+
+combined_maps <- map_income + map_solar +
+  plot_annotation(
+    title = "Median Income vs. Solar Panel Coverage — Oahu Census Tracts",
+    theme = theme(plot.title = element_text(face = "bold", size = 14, hjust = 0.5))
+  )
+combined_maps
 
 ```
