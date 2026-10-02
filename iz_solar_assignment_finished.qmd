@@ -1,0 +1,374 @@
+---
+title: "SAM3"
+format: html
+editor: visual
+---
+
+## Read in Libraries 
+
+```{r}
+library(tidyverse)
+library(here)
+library(sf)
+library(mapview)
+library(tidycensus)
+library(scales)
+```
+
+## Read in data
+
+```{r}
+SAM <- st_read(here("oahu_solar_dedup_simple.geojson"))
+
+hf_token <- Sys.getenv("HF_TOKEN")
+```
+
+## Map the data
+
+```{r}
+mapview(SAM)
+```
+
+## Retrieve census data
+
+```{r}
+library(tidycensus)
+
+oahu_median_household_income <- get_acs(
+  geography = "tract",
+  variable = "B19013_001",
+  state = "HI",
+  county = "Honolulu",
+  geometry = TRUE,
+  year = 2022)
+
+```
+
+```{r}
+mapview(oahu_median_household_income,
+        zcol = "estimate")
+```
+
+```{r}
+ggplot(data = oahu_median_household_income,
+       aes(x = moe, y = estimate)) + 
+  geom_point()+
+  geom_smooth(method = "lm")
+```
+
+\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_
+
+## Homework
+
+```{r}
+income_sf <- get_acs(
+  geography = "tract",
+  variables = "B19013_001",   # median household income
+  state     = "HI",
+  county    = "Honolulu",
+  year      = 2022,
+  geometry  = TRUE,
+  survey    = "acs5"
+) %>%
+  rename(median_income = estimate, income_moe = moe) %>%
+  filter(!is.na(median_income))
+```
+
+```{r}
+solar_sf <- st_read("oahu_solar_dedup_simple.geojson", quiet = TRUE)
+```
+
+## #4
+
+```{r}
+# Project to UTM 4N (meters) so areas are in m²
+SAM <- SAM %>%
+  st_make_valid() %>%
+  st_transform(32604) %>%
+  mutate(
+    poly_id = row_number(),
+    area_m2 = as.numeric(st_area(geometry))
+  )
+```
+
+```{r}
+glimpse(SAM)
+```
+
+## #5
+
+```{r}
+glimpse(oahu_median_household_income)
+
+nrow(SAM)
+```
+
+```{r}
+oahu_median_household_income %>%
+  st_drop_geometry() %>%
+  summarise(n_tracts = n(),
+            n_missing = sum(is.na(estimate)),
+            min_income = min(estimate, na.rm = TRUE),
+            median_income = median(estimate, na.rm = TRUE),
+            max_income = max(estimate, na.rm = TRUE))
+```
+
+```{r}
+oahu_bbox <- st_bbox(
+  c(xmin = -158.35, xmax = -157.6, ymin = 21.2, ymax = 21.8),
+  crs = 4326
+) %>% st_as_sfc()
+
+med_income_cen <- oahu_median_household_income %>%
+  st_transform(4326) %>%
+  filter(st_within(st_centroid(geometry), oahu_bbox, sparse = FALSE)[, 1]) %>%
+  rename(median_income = estimate, income_moe = moe) %>%
+  st_transform(32604) %>%
+  mutate(tract_area_m2 = as.numeric(st_area(geometry)))
+
+nrow(oahu_median_household_income); nrow(med_income_cen)
+```
+
+```{r}
+ggplot(med_income_cen) +
+  geom_sf(aes(fill = median_income), color = "white", linewidth = 0.1) +
+  scale_fill_viridis_c(option = "magma", labels = dollar,
+                       na.value = "grey80", name = "Median\nincome") +
+  labs(title = "Median Household Income by Census Tract",
+       subtitle = "Oahu, ACS 5-year 2022",
+       caption = "Grey = no income estimate") +
+  theme_void()
+```
+
+## #6
+
+```{r}
+solar_by_tract <- SAM %>%
+  st_centroid() %>%
+  st_join(med_income_cen %>% select(GEOID)) %>%
+  st_drop_geometry() %>%
+  filter(!is.na(GEOID)) %>%
+  group_by(GEOID) %>%
+  summarise(
+    solar_area_m2 = sum(area_m2),
+    n_polygons    = n(),
+    .groups = "drop"
+  )
+
+nrow(solar_by_tract)   # tracts with at least one polygon
+```
+
+```{r}
+tracts_solar <- med_income_cen %>%
+  left_join(solar_by_tract, by = "GEOID") %>%
+  mutate(
+    solar_area_m2 = replace_na(solar_area_m2, 0),
+    n_polygons    = replace_na(n_polygons, 0)
+  )
+
+summary(tracts_solar$solar_area_m2)
+```
+
+```{r}
+ggplot(tracts_solar) +
+  geom_sf(aes(fill = solar_area_m2), color = "white", linewidth = 0.1) +
+  scale_fill_viridis_c(option = "inferno", labels = comma,
+                       name = "Solar area\n(m²)") +
+  labs(title = "Solar Infrastructure Area by Census Tract",
+       subtitle = "Oahu, SAM3 predictions, all polygons") +
+  theme_void()
+```
+
+```{r}
+ggplot(tracts_solar) +
+  geom_sf(aes(fill = solar_area_m2 + 1), color = "white", linewidth = 0.1) +
+  scale_fill_viridis_c(option = "inferno", trans = "log10", labels = comma,
+                       name = "Solar area\n(m², log)") +
+  labs(title = "Solar Infrastructure Area by Census Tract (log scale)",
+       subtitle = "Oahu, SAM3 predictions, all polygons") +
+  theme_void()
+```
+
+## #7
+
+```{r}
+tracts_norm <- tracts_solar %>%
+  mutate(
+    solar_pct_area = solar_area_m2 / tract_area_m2 * 100
+  )
+
+summary(tracts_norm$solar_pct_area)
+```
+
+```{r}
+pop_hh <- get_acs(
+  geography = "tract",
+  variables = c(population = "B01003_001",
+                households = "B11001_001"),
+  state = "HI",
+  county = "Honolulu",
+  year = 2022,
+  survey = "acs5",
+  output = "wide",
+  geometry = FALSE
+) %>%
+  select(GEOID, population = populationE, households = householdsE)
+```
+
+```{r}
+tracts_norm <- tracts_norm %>%
+  left_join(pop_hh, by = "GEOID") %>%
+  mutate(
+    solar_m2_per_hh  = if_else(households > 0, solar_area_m2 / households, NA_real_),
+    solar_m2_per_cap = if_else(population > 0, solar_area_m2 / population, NA_real_)
+  )
+```
+
+```{r}
+summary(tracts_norm$solar_m2_per_hh)
+```
+
+```{r}
+###PUT THEM ALL TOGETHER
+library(patchwork)
+
+p_raw <- ggplot(tracts_norm) +
+  geom_sf(aes(fill = solar_area_m2 + 1), color = "white", linewidth = 0.1) +
+  scale_fill_viridis_c(option = "inferno", trans = "log10", labels = comma,
+                       name = "m²") +
+  labs(title = "Raw solar area") +
+  theme_void()
+
+p_pct <- ggplot(tracts_norm) +
+  geom_sf(aes(fill = solar_pct_area), color = "white", linewidth = 0.1) +
+  scale_fill_viridis_c(option = "inferno", name = "% of tract") +
+  labs(title = "Solar as % of tract area") +
+  theme_void()
+
+p_hh <- ggplot(tracts_norm) +
+  geom_sf(aes(fill = solar_m2_per_hh), color = "white", linewidth = 0.1) +
+  scale_fill_viridis_c(option = "inferno", na.value = "grey80", name = "m² / hh") +
+  labs(title = "Solar m² per household") +
+  theme_void()
+
+p_raw + p_pct + p_hh
+```
+
+## #8
+
+```{r}
+# Percentiles and a size-class breakdown
+quantile(SAM$area_m2, probs = c(.5, .75, .9, .95, .99, .999))
+```
+
+```{r}
+SAM %>%
+  st_drop_geometry() %>%
+  mutate(size_class = cut(area_m2,
+                          breaks = c(0, 25, 50, 100, 250, 500, 1000, 5000, Inf),
+                          labels = c("<25", "25-50", "50-100", "100-250", "250-500",
+                                     "500-1k", "1k-5k", ">5k"))) %>%
+  group_by(size_class) %>%
+  summarise(n = n(),
+            total_m2 = sum(area_m2),
+            pct_of_polygons = n() / nrow(SAM) * 100,
+            .groups = "drop") %>%
+  mutate(pct_of_total_area = total_m2 / sum(total_m2) * 100)
+```
+
+```{r}
+ggplot(SAM, aes(area_m2)) +
+  geom_histogram(bins = 60, fill = "steelblue", color = "grey") +
+  geom_vline(xintercept = c(100, 250, 500, 1000), linetype = "dashed") +
+  scale_x_log10(labels = comma) +
+  theme_minimal()
+```
+
+```{r}
+mapview(SAM %>% filter(area_m2 > 250 & area_m2 <= 1000),
+        map.types = "Esri.WorldImagery", col.regions = "yellow", layer.name = "250-1000 m²") +
+  mapview(SAM %>% filter(area_m2 > 1000),
+          col.regions = "red", layer.name = ">1000 m²")
+```
+
+## #9
+
+```{r}
+clusters_sf <- SAM %>%
+  st_buffer(10) %>%
+  st_union() %>%
+  st_cast("POLYGON") %>%
+  st_sf(cluster_id = seq_len(length(.)), geometry = .)
+```
+
+```{r}
+SAM$cluster_id <- st_intersects(st_centroid(SAM), clusters_sf) %>%
+  map_int(~ .x[1])
+```
+
+```{r}
+cluster_summary <- SAM %>%
+  st_drop_geometry() %>%
+  group_by(cluster_id) %>%
+  summarise(n_polys = n(),
+            cluster_area_m2 = sum(area_m2),
+            max_poly_m2 = max(area_m2),
+            .groups = "drop")
+```
+
+```{r}
+#many polygons or one big one?
+cluster_summary %>%
+  arrange(desc(cluster_area_m2)) %>%
+  head(15)
+```
+
+## #10
+
+```{r}
+SAM_res <- SAM %>% filter(area_m2 <= 500)
+```
+
+```{r}
+# SUM of solar area per tract
+solar_by_tract <- SAM_res %>%
+  st_centroid() %>%
+  st_join(med_income_cen %>% select(GEOID)) %>%
+  st_drop_geometry() %>%
+  filter(!is.na(GEOID)) %>%
+  group_by(GEOID) %>%
+  summarise(solar_area_m2 = sum(area_m2), .groups = "drop")
+```
+
+```{r}
+# Combine income into one dataframe
+tracts_model <- med_income_cen %>%
+  left_join(solar_by_tract, by = "GEOID") %>%
+  mutate(solar_area_m2 = replace_na(solar_area_m2, 0)) %>%
+  filter(!is.na(median_income))
+```
+
+```{r}
+ggplot(tracts_model, aes(x = median_income, y = solar_area_m2)) +
+  geom_point(alpha = 0.7, color = "steelblue") +
+  geom_smooth(method = "lm", color = "black") +
+  scale_x_continuous(labels = dollar) +
+  scale_y_continuous(labels = comma) +
+  labs(x = "Median household income", y = "Solar area") +
+  theme_minimal()
+```
+
+```{r}
+nrow(tracts_model)
+```
+
+## #11
+
+```{r}
+cor.test(tracts_model$median_income, tracts_model$solar_area_m2)
+```
+
+```{r}
+cor.test(tracts_model$median_income, tracts_model$solar_area_m2,
+         method = "spearman", exact = FALSE)
+```
